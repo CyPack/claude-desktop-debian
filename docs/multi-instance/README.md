@@ -25,14 +25,17 @@ Useful for:
 | `SingletonLock` / `SingletonCookie` / `SingletonSocket` | `local-agent-mode-sessions/` |
 | `Cache/`, `Code Cache/`, `GPUCache/`, `Dawn*Cache/`     | `claude-code/`                |
 | `IndexedDB/`, `Local Storage/`, `Session Storage/`     | `claude-code-sessions/`       |
-| `Cookies`, `Cookies-journal` (encrypted, per-profile)  | `claude-code-vm/`             |
-| `Preferences`, `config.json` (incl. `oauth:tokenCache`) | `pending-uploads/`            |
-| `claude_desktop_config.json`         | `git-worktrees.json`                 |
-| `bridge-state.json` (per-profile)    | `buddy-tokens.json` (daily counter)  |
+| `Cookies`, `Cookies-journal` (encrypted, per-profile)  | `pending-uploads/`            |
+| `Preferences`, `config.json` (incl. `oauth:tokenCache`) | `git-worktrees.json`         |
+| `claude_desktop_config.json`         | `buddy-tokens.json` (daily counter)  |
+| `bridge-state.json` (per-profile)    |                                      |
+| **`claude-code-vm/`** (per-profile, see Cascade-quit fix below) |          |
 | `ant-did` (instance UUID)            |                                      |
 | `Crashpad/`, `blob_storage/`         |                                      |
 
 The split keeps Electron singleton-locks separate (so parallel windows work) while the JSON-based session stores can be safely shared (multiple readers, one writer at a time — same as a single-instance install).
+
+> **Cascade-quit fix:** Earlier drafts of this guide symlinked `claude-code-vm/` to the main profile. Don't do that. When one profile shut down it would tear down its (shared) cowork-VM data and the other instances would crash with it. Each profile must own its own `claude-code-vm/` directory. The launcher script in this guide creates it as an empty real dir; if you build the profile by hand, omit `claude-code-vm` from the symlink loop.
 
 ---
 
@@ -45,12 +48,17 @@ MAIN="$HOME/.config/Claude"
 PROFILE="$HOME/.config/Claude-2"
 mkdir -p "$PROFILE/tmp"
 
-# Symlink the shared, session-bearing items
-for item in claude-code claude-code-sessions claude-code-vm \
+# Symlink the shared, session-bearing items.
+# claude-code-vm is intentionally excluded — see Cascade-quit fix above.
+for item in claude-code claude-code-sessions \
             git-worktrees.json local-agent-mode-sessions \
             pending-uploads buddy-tokens.json; do
   ln -sfn "$MAIN/$item" "$PROFILE/$item"
 done
+
+# claude-code-vm: per-profile real dir, NOT a symlink.
+mkdir -p "$PROFILE/claude-code-vm"
+chmod 700 "$PROFILE/claude-code-vm"
 ```
 
 ### 2. Launch with an isolated `userData`
@@ -80,17 +88,21 @@ The flags `--class=Claude-N --name=Claude-N` set the X11 instance class on **chi
 
 ### Per-profile color-coded icons (optional)
 
-If you've added `.desktop` entries with `Icon=claude-desktop-N`, generate tinted icons via ImageMagick:
+If you've added `.desktop` entries with `Icon=claude-desktop-N`, generate tinted icons via ImageMagick. The helper script supports two modes:
+
+**`modulate` mode** — rotates the whole image's hue. Affects every pixel including the white logo, so for muted/dark variants the logo also dims.
+
+**`fill` mode** — replaces only the coral background with a solid color and keeps the white Claude logo intact. Best for muted/dark/chill tints.
 
 ```bash
-# See recolor-icon.sh — it produces six sizes from the system icon.
-./recolor-icon.sh 2 100 100 47    # profile 2 — purple/lavender (hue -95°)
-./recolor-icon.sh 3 100 100 167   # profile 3 — green           (hue +120°)
-./recolor-icon.sh 4 110 160 30    # profile 4 — indigo (boosted) (perceptually purple)
+# See recolor-icon.sh for details.
+./recolor-icon.sh 2 modulate 100 100 47    # profile 2 — purple/lavender (hue -95°)
+./recolor-icon.sh 3 fill '#3F6B47'         # profile 3 — dark forest matte (logo stays white)
+./recolor-icon.sh 4 modulate 110 160 30    # profile 4 — indigo (perceptually purple)
 gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor"
 ```
 
-The numeric arguments after the profile number are ImageMagick's `-modulate brightness,saturation,hue` parameters (`100,100,100` = no change). Hue values: `100` = 0° shift, `200` = +180°, `0` = -180°. Note that perceived color depends on saturation/brightness too — boosting saturation can shift apparent hue (this is why profile 4's `+30°` looks indigo rather than yellow).
+For `modulate`, the numeric arguments are ImageMagick's `-modulate brightness,saturation,hue` (`100,100,100` = no change; hue `100` = 0° shift, `200` = +180°, `0` = -180°). For `fill`, pass any hex color (the script targets coral `#D97757` with a 30% fuzz tolerance by default; an optional 4th argument overrides the fuzz percent). Note that with `modulate`, perceived color also depends on saturation — boosting saturation while shifting hue can shift the apparent color (this is why profile 4's `+30°` reads as indigo rather than yellow).
 
 ### Launching helper script
 

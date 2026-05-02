@@ -23,10 +23,12 @@ main_dir="${HOME}/.config/Claude"
 bin='/usr/bin/claude-desktop'
 
 # Items the side profile shares with the main profile (symlinks).
+# NOTE: claude-code-vm is intentionally NOT shared. Sharing the cowork VM
+# data dir causes a cascade-quit where closing one profile takes down the
+# others (lock release / cleanup races). Each profile gets its own real dir.
 shared_items=(
 	'claude-code'
 	'claude-code-sessions'
-	'claude-code-vm'
 	'git-worktrees.json'
 	'local-agent-mode-sessions'
 	'pending-uploads'
@@ -47,6 +49,10 @@ ensure_profile() {
 		ln -sfn "${main_dir}/${item}" "${dir}/${item}"
 	done
 
+	# Per-profile real dir for cowork VM state (must NOT be shared).
+	mkdir -p "${dir}/claude-code-vm"
+	chmod 700 "${dir}/claude-code-vm"
+
 	# Seed config.json so Electron's first launch finds a valid file.
 	[[ -f "${main_dir}/config.json" ]] &&
 		cp "${main_dir}/config.json" "${dir}/config.json"
@@ -58,6 +64,34 @@ ensure_profile() {
 	command -v uuidgen >/dev/null &&
 		printf '%s' "$(uuidgen)" | base64 -w0 >"${dir}/ant-did" &&
 		chmod 600 "${dir}/ant-did"
+}
+
+# One-shot WM_CLASS patch — runs in background, sleeps 5s, then sets
+# WM_CLASS once. No polling loop, no CPU cost. Without this, Electron's
+# main BrowserWindow keeps Chromium's default class (`claude`) regardless
+# of the `--class=` flag, so GNOME / Dash-to-Dock cannot match the window
+# to the per-profile .desktop entry — colored icon and the active-app dot
+# indicator do not appear.
+fix_wm_class_once() {
+	local profile="$1"
+	local dir="$2"
+	command -v xdotool >/dev/null || return 0
+	sleep 5
+
+	local pid
+	pid=$(pgrep -f "electron.*--user-data-dir=${dir}" | head -1)
+	[[ -z "$pid" ]] && return 0
+
+	local wid cur
+	for wid in $(xdotool search --pid "$pid" 2>/dev/null); do
+		cur=$(xprop -id "$wid" WM_CLASS 2>/dev/null | sed 's/.*= //')
+		case "$cur" in
+			*mutter-x11-frames*) continue ;;
+			*"Claude-${profile}"*) continue ;;
+		esac
+		xdotool set_window --class "Claude-${profile}" \
+			--classname "Claude-${profile}" "$wid" 2>/dev/null
+	done
 }
 
 sync_token_first_run() {
@@ -102,6 +136,12 @@ launch_profile() {
 		"$bin" --user-data-dir="$dir" \
 		--class="Claude-${profile}" --name="Claude-${profile}" \
 		>/dev/null 2>&1 &
+
+	# Background one-shot WM_CLASS patch (5s sleep, then single set_window).
+	# Detached so the launcher returns immediately.
+	( fix_wm_class_once "$profile" "$dir" ) >/dev/null 2>&1 &
+	disown 2>/dev/null || true
+
 	echo "Launched Claude Profile ${profile}"
 }
 
